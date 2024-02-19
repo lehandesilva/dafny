@@ -1,116 +1,193 @@
 class {:autocontracts} CarPark {
 
-    ghost var size: int
-    ghost var reservedSpaces: int
-    ghost var availNonResSpaces: int
-    ghost var availResSpaces: int
-    ghost var nonReservedPark: seq<bool>
-    ghost var reservedPark: seq<string>
-    ghost var full: bool
+    var parkSize: int
+    var reservedSpaces: int
+    var carpark: set<int> // set contains all cars including reserved cars
+    var reservedArea: set<int> // set contains only reserved cars
+    var subscriptions: set<int> // set contains subscribed cars
+    var reservedAreaOpen: bool
+    var minSpacesLeft: int // always 5
 
-    var carpark: array<bool>
-    var reserevedArea: set<int>
-    var weekend: bool
-    var reserevedPointer: int
-    var carparkPointer: int
-    var subscriptions: seq<int>
-    var availableSpaces: int
-    
-    ghost predicate Valid() {
-        // size - reservedSpaces == |nonReservedPark|
-        // && size == |nonReservedPark| + |reservedPark|
-        // && availNonResSpaces >= 5
-        forall i :: 0 <= i < carpark.Length ==> carpark[i] == false || true
-    }
         //arguments - reserved area space, day, normal spaces, array of exisiting subscribed cars, closing time 
-    constructor(parkSize: int, weekend: bool, reservedSpaces: int, subscriptions: seq<int>) 
+    constructor(parkSize: int, reservedSpaces: int, subscriptions: set<int>) 
         requires parkSize > 6 //size should always be a positive number
-        requires parkSize > reservedSpaces && reservedSpaces > 0 //total spots alaways greater than 0 and the resereved spaces
-        requires |subscriptions| <= reservedSpaces //number of subcriptions less than reserved spots
+        requires parkSize > reservedSpaces && reservedSpaces > 0 //total spots alaways greater than 0 and the reserved spaces
+        requires |subscriptions| <= reservedSpaces // subscriptions cant be greater than the reserved spaces
     {
-        size := parkSize;
-        carparkPointer, carpark := 0, new bool[parkSize](n=>false);
-        reserevedPointer, reserevedArea := 0, {};
-        this.weekend := weekend;
-        full := false;
-        // nextReserveSpot, nextNonReserveSpot := 0,0;
+        this.parkSize := parkSize;
+        carpark := {};
+        reservedArea :=  {};
+        minSpacesLeft := 5;
         this.reservedSpaces := reservedSpaces;
         this.subscriptions := subscriptions;
-        availResSpaces, availNonResSpaces := reservedSpaces, parkSize - reservedSpaces;
+    }
+
+    ghost predicate Valid() {
+        //number of subscriptions must not be greater than reserved spaces
+        reservedSpaces >= |subscriptions|
+    }
+
+    ghost predicate canEnter() {
+        // if the reserved area is open, the available spaces wont count the reserved spaces
+        // and would imply that they available for everyone as well
+        (reservedAreaOpen && (parkSize - minSpacesLeft - |carpark| > 0)) || 
+        (!reservedAreaOpen && (parkSize - minSpacesLeft - |carpark| - reservedSpaces > 0))
+    }
+
+    method enterCarPark(plateNum: int) returns (carParked: bool)
+    // checks canEnter predicate to check available spaces and if the car can enter
+    ensures  canEnter() ==> carParked
+    // If reserved area is not open but the carpark is full, allow reserved cars in
+    ensures !reservedAreaOpen && plateNum in subscriptions ==> carParked 
+    // If true, the car will be added to the set containing all cars
+    ensures carParked ==> (carpark == old(carpark) + {plateNum})
+    {
+        if ((reservedAreaOpen && (parkSize - minSpacesLeft - |carpark| > 0)) || (!reservedAreaOpen && (parkSize - minSpacesLeft - |carpark| - reservedSpaces > 0)) || plateNum in subscriptions){
+            carpark := carpark + {plateNum};
+            carParked := true;
+        }
+        else {
+            carParked := false;
+        }
+    }
+
+    method leaveCarPark(plateNum: int)
+    // the car should already be in the set before removing it
+    requires plateNum in carpark
+    // the car will be removed from the carpark (applies for both reserved and non-reserved cars)
+    ensures carpark == old(carpark) - {plateNum}
+    // if the car is in the reserved area, it will be removed 
+    ensures reservedArea == old(reservedArea) - {plateNum}
+    {
+        // removes the car from the carpark
+        carpark := carpark - {plateNum};
+        // removes the car from reserved area if it is in it
+        if (plateNum in reservedArea) {
+            reservedArea := reservedArea - {plateNum};
+        }
+    }
+
+    method checkAvailability() returns (availableSpaces: int)
+    /* 
+    if the reserved area is open, the available spaces would return the remainder after subtracting 
+    the 5 spaces left for the inconsiderate drivers and the already occupied spaces
+    */
+    ensures reservedAreaOpen ==> parkSize - minSpacesLeft - |carpark| == availableSpaces
+    // if the reserved area is NOT open, the 
+    ensures !reservedAreaOpen ==> parkSize - minSpacesLeft - reservedSpaces - (|carpark|  - |reservedArea|) == availableSpaces
+    // the carpark will not changed when called
+    ensures old(carpark) == carpark
+    {
+        if (reservedAreaOpen) {
+            availableSpaces := parkSize - minSpacesLeft - |carpark|;
+        }
+        else {
+            availableSpaces := parkSize - minSpacesLeft - reservedSpaces - (|carpark| - |reservedArea|);
+        }
+    }
+
+    method enterReservedCarPark(plateNum: int) returns (carParked: bool)
+    // car can enter if the reserved area is open or if it is subscribed
+    requires plateNum in subscriptions || reservedAreaOpen
+    // if the reserved area is closed, the subscribed car will be added and reserved area set will change
+    ensures !reservedAreaOpen ==> reservedArea == old(reservedArea) + {plateNum}
+    {
+        if (!reservedAreaOpen){
+            reservedArea := reservedArea + {plateNum};
+        }
+        carParked := true;
+    }
+
+    method makeSubscription(plateNum: int) returns (subscribed: bool)
+    // the plate number will be added to the set containing all subscriptions
+    ensures |subscriptions| < reservedSpaces ==> subscriptions == (old(subscriptions) + {plateNum})
+    {
+        if (|subscriptions| < reservedSpaces) {
+            subscriptions := subscriptions + {plateNum};
+            subscribed := true;
+        }
+        else {
+            subscribed := false;
+        }
+    }
+
+    method openReservedArea()
+    // the second barrier will be opened so the reservedAreaOpen set to true
+    ensures reservedAreaOpen
+    {
+        reservedAreaOpen := true;
+    }
+
+    method closeCarPark()
+    // the sets will be emptied and the reserved area will be set to false to close the second barrier
+    ensures reservedArea == {} && carpark == {} && !reservedAreaOpen
+    {
+        reservedArea := {};
+        carpark := {};
+        reservedAreaOpen := false;
     }
 
     method printParkingPlan()
     {
+        print "\nWhole car park : \n";
+        print |carpark|;
         print carpark;
+        print "\nReserved Area : \n";
+        print |reservedArea|;
+        print reservedArea;
+
     }
-
-    method checkAvailability() returns (res: int)
-    // ensures that return value is always a positive integer
-    ensures res >= 0
-    // ensures the sequence isn't changed
-    ensures carpark == old(carpark)
-    {
-        var count := 0;
-        for i := 0 to carpark.Length
-            invariant 0 <= i <= carpark.Length
-        {
-            if !carpark[i] {
-            count := count + 1;
-            }
-        }
-        res, availableSpaces := count, count;
-    }
-
-    method enterCarPark(plateNum: int) returns (carParked: bool)
-    modifies this
-    modifies carpark
-    requires 0 <= carparkPointer < carpark.Length
-    requires availableSpaces > 5 || plateNum in subscriptions
-    // when the park is "full" or plate number is not subscribed, the method will return false
-    ensures availableSpaces <= 5 || plateNum !in subscriptions ==> carpark == old(carpark) && !carParked
-    // write some other shit for this im going mad
-    {
-        if (availableSpaces <= 5 || plateNum !in subscriptions) 
-        {
-            carParked := false;
-        }
-        else 
-        {
-            carpark[carparkPointer] := true;
-            carparkPointer := carparkPointer + 1;
-            carParked := true;
-        }
-    }
-
-    method leaveCarPark() 
-    {}
-
-    method enterReservedCarPark()
-    {}
-
-    method makeSubscription()
-    {}
-
-    method openReservedArea()
-    {}
-
-    method closeCarPark()
-    {}
-
 }
-    
-    // enterCarPark - plateNum | returns true or false
-    // leaveCarPark - plateNum | returns true or false
-    // checkAvailability - returns int
-    // enterReservedCarPark - plateNum, day | returns true or false
-    // makeSubscription - plateNum | returns 
-    // openReservedArea - returns true or false
-    // closeCarPark - return true or false
-    // valid - returns true or false
 
-// size: int, weekend: bool, reservedSpaces: int, subscriptions: set<int>
+// (parkSize: int, reservedSpaces: int, subscriptions: set<int>) 
 method Main() {
-    var carpark := new CarPark(10, false, 5,[0,0]);
+    print "Test case: 1";
+    // Test case 1:
+    // creating a car park with 15 spaces with 5 reserved spaces. This would mean only 5 
+    // spaces non reserved spaces woulf be left. Adding anything more would return false 
+    // unless it is subscribed
+    var carpark := new CarPark(15, 5, {});
+    var car1 := carpark.enterCarPark(1);
+    var car2 := carpark.enterCarPark(2);
+    var car3 := carpark.enterCarPark(3);
+    var car4 := carpark.enterCarPark(4);
+    var car5 := carpark.enterCarPark(5);
+    // car 6 can enter even though the carpark is full as it is subscribed
+    var subscribed := carpark.makeSubscription(6);
     carpark.printParkingPlan();
-    
+    var car6 := carpark.enterCarPark(6);
+    if (6 in carpark.subscriptions) {
+        var enteredreserved := carpark.enterReservedCarPark(6);
+    }
+    // cars attempting to enter after would return false as they aren't subscribed
+    var car7 := carpark.enterCarPark(7);
+    if (5 in carpark.carpark){
+        carpark.leaveCarPark(5);
+    }
+    var car8 := carpark.enterCarPark(8);
+    carpark.printParkingPlan();
+    // carpark would be emptied
+    carpark.closeCarPark();
+    carpark.printParkingPlan();
+    print "\nTest Case: 2";
+    // Trying to enter 6 non subscribed cars when only 5 allowed and once reserved area is open
+    // testing if cars can enter reserved area even if they aren't subscribed
+    var carpark2 := new CarPark(15, 5, {});
+    var car9 := carpark2.enterCarPark(9);
+    var car10 := carpark2.enterCarPark(10);
+    var car11 := carpark2.enterCarPark(11);
+    var car12 := carpark2.enterCarPark(12);
+    var car13 := carpark2.enterCarPark(13);
+    var car14 := carpark2.enterCarPark(14);
+    carpark2.printParkingPlan();
+    carpark2.openReservedArea();
+    var car15 := carpark2.enterCarPark(15);
+    if (carpark2.reservedAreaOpen){
+        var enteredreserved2 := carpark2.enterReservedCarPark(15);
+    }
+    var car16 := carpark2.enterCarPark(16);
+    if (carpark2.reservedAreaOpen){
+        var enteredreserved3 := carpark2.enterReservedCarPark(16);
+    }
+    carpark2.printParkingPlan();
 }
